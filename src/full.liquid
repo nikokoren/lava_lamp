@@ -1,5 +1,1 @@
-{%- assign settings = trmnl.plugin_settings -%}
-<div class="lava" data-view="full"
-  data-liquid="{{ settings.custom_fields_values.liquid_color | default: 'yellow' }}"
-  data-speed="{{ settings.custom_fields_values.speed | default: 'slow' }}"
-  data-refresh="{{ settings.refresh_interval_minutes }}"></div>
+{% render "lava", view: "full", trmnl: trmnl %}
