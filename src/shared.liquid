@@ -71,6 +71,12 @@ var LavaLamp = (function () {
   var WAX_LEVEL = 0.25;
   var CORE_LEVEL = 0.62;
   var GLOSS_LEVEL = 0.45;
+  // The gloss shape is nudged mostly upward, so it lights the tops of blobs
+  // rather than drawing a line down their sides. Pieces thinner than
+  // GLOSS_MIN_THICKNESS on average (seams, slivers in necks) are dropped.
+  var GLOSS_NUDGE_X = 0.3;
+  var GLOSS_NUDGE_Y = 1;
+  var GLOSS_MIN_THICKNESS = 0.45;
 
   function random(seed) {
     return function () {
@@ -233,6 +239,39 @@ var LavaLamp = (function () {
     return loops;
   }
 
+  // The gloss crescent as its own field, positive where a point is inside the
+  // wax, inside the gloss shape nudged by (dx, dy), and outside the un-nudged
+  // gloss shape. Its outline at level 0 is the crescent.
+  function crescent(grid, dx, dy) {
+    var v = grid.values, nx = grid.nx, ny = grid.ny;
+    var out = new Float32Array(nx * ny);
+    for (var j = 0; j < ny; j++) {
+      for (var i = 0; i < nx; i++) {
+        var f = v[j * nx + i];
+        out[j * nx + i] = Math.min(f - WAX_LEVEL, GLOSS_LEVEL - f, at(grid, i - dx / grid.cell, j - dy / grid.cell) - GLOSS_LEVEL);
+      }
+    }
+    return { values: out, nx: nx, ny: ny, x0: grid.x0, y0: grid.y0, cell: grid.cell };
+  }
+
+  // The field between grid points, by bilinear interpolation; zero off the grid.
+  function at(grid, x, y) {
+    var i = Math.floor(x), j = Math.floor(y);
+    if (i < 0 || j < 0 || i >= grid.nx - 1 || j >= grid.ny - 1) return 0;
+    var fx = x - i, fy = y - j, k = j * grid.nx + i, v = grid.values;
+    return (v[k] * (1 - fx) + v[k + 1] * fx) * (1 - fy) + (v[k + grid.nx] * (1 - fx) + v[k + grid.nx + 1] * fx) * fy;
+  }
+
+  // Average thickness of a closed outline: twice its area over its perimeter.
+  function thickness(p) {
+    var length = 0;
+    for (var i = 0, n = p.length; i < n; i++) {
+      var q = p[(i + 1) % n];
+      length += Math.hypot(q[0] - p[i][0], q[1] - p[i][1]);
+    }
+    return 2 * Math.abs(area(p)) / length;
+  }
+
   function area(p) {
     var sum = 0;
     for (var i = 0, n = p.length; i < n; i++) {
@@ -262,13 +301,17 @@ var LavaLamp = (function () {
   function frame(width, height, ms, options) {
     var perRefresh = SPEEDS[options.speed] || SPEEDS.slow;
     var t = ms / 60000 / (options.refresh || 15);
-    var cell = Math.max(4, Math.min(width, height) / 100);
+    // Fine enough on every screen to resolve the thin gloss crescent.
+    var cell = Math.min(5, Math.max(4, Math.min(width, height) / 100));
     var grid = sample(balls(cast(width, height), t, height, perRefresh), width, height, cell);
+    var shift = RADIUS * 0.1;
+    var gloss = outlines(crescent(grid, -shift * GLOSS_NUDGE_X, -shift * GLOSS_NUDGE_Y), 0)
+      .filter(function (loop) { return thickness(loop) >= shift * GLOSS_MIN_THICKNESS; });
     return {
       wax: path(outlines(grid, WAX_LEVEL)),
       core: path(outlines(grid, CORE_LEVEL)),
-      gloss: path(outlines(grid, GLOSS_LEVEL)),
-      shift: RADIUS * 0.1
+      gloss: path(gloss),
+      shift: shift
     };
   }
 
@@ -284,18 +327,13 @@ var LavaLamp = (function () {
     var id = 'lava-' + (++drawn);
     var s = layers.shift;
     // Lit from the top left: the core sits low and right, so the lighter rim is
-    // thickest at the top left. The gloss is a thin crescent there: the gloss
-    // outline nudged up and left, minus itself. Both stay inside the wax.
+    // thickest at the top left. The gloss crescent is computed in frame().
     el.innerHTML =
       '<svg class="lava__scene" viewBox="0 0 ' + width + ' ' + height + '" xmlns="http://www.w3.org/2000/svg">' +
-      '<defs><clipPath id="' + id + '-wax"><path fill-rule="evenodd" d="' + layers.wax + '"/></clipPath>' +
-      '<mask id="' + id + '-gloss" maskUnits="userSpaceOnUse" x="0" y="0" width="' + width + '" height="' + height + '">' +
-      '<rect width="' + width + '" height="' + height + '" fill="#fff"/>' +
-      '<path fill="#000" fill-rule="evenodd" d="' + layers.gloss + '"/></mask></defs>' +
+      '<defs><clipPath id="' + id + '-wax"><path fill-rule="evenodd" d="' + layers.wax + '"/></clipPath></defs>' +
       '<path class="lava__wax" fill-rule="evenodd" d="' + layers.wax + '"/>' +
       '<path class="lava__core" fill-rule="evenodd" clip-path="url(#' + id + '-wax)" transform="translate(' + s + ' ' + s * 1.5 + ')" d="' + layers.core + '"/>' +
-      '<g clip-path="url(#' + id + '-wax)" mask="url(#' + id + '-gloss)">' +
-      '<path class="lava__gloss" fill-rule="evenodd" transform="translate(' + (-s) + ' ' + (-s) + ')" d="' + layers.gloss + '"/></g>' +
+      '<path class="lava__gloss" fill-rule="evenodd" d="' + layers.gloss + '"/>' +
       '</svg>';
   }
 
