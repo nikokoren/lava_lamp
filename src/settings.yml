@@ -1,0 +1,41 @@
+#
+# Changes to this file will be overwritten by `trmnlp pull`.
+#
+# Docs: https://help.trmnl.com/en/articles/10542599-importing-and-exporting-private-plugins#h_581fb988f0
+#
+---
+strategy: static
+no_screen_padding: 'yes'
+dark_mode: 'no'
+static_data: '{}'
+polling_verb: get
+framework_version: latest
+polling_url: ''
+polling_headers: ''
+name: Lava Lamp
+description: Full-screen generative lava lamp
+refresh_interval: 15
+custom_fields:
+- keyname: author_bio
+  name: About This Plugin
+  field_type: author_bio
+  description: A full-screen lava lamp whose red wax slowly rises, sinks and merges across refreshes.
+  github_url: https://github.com/nikokoren/lava_lamp
+- keyname: liquid_color
+  name: Liquid Color
+  field_type: select
+  description: Color of the liquid around the wax on color displays. Grayscale displays always use a light liquid.
+  options:
+  - Yellow: yellow
+  - White: white
+  - Black: black
+  default: yellow
+- keyname: speed
+  name: Speed
+  field_type: select
+  description: How far the wax moves between refreshes.
+  options:
+  - Very slow: very_slow
+  - Slow: slow
+  - Normal: normal
+  default: slow
