@@ -1,4 +1,309 @@
 {% comment %}
-  Prepended to every view. The lava lamp scene renderer lives here so all
-  views share one implementation; each view only provides a .lava container.
+  Prepended to every view. Each view renders the "lava" template below; the
+  script then replaces the fallback scene with the frame for the current time.
+  Design notes: docs/DESIGN.md
 {% endcomment %}
+
+{% template lava %}
+<div class="lava" data-view="{{ view }}"
+  data-liquid="{{ trmnl.plugin_settings.custom_fields_values.liquid_color | default: 'yellow' }}"
+  data-speed="{{ trmnl.plugin_settings.custom_fields_values.speed | default: 'slow' }}"
+  data-refresh="{{ trmnl.plugin_settings.refresh_interval_minutes | default: 15 }}">
+  {% render "lava_fallback" %}
+</div>
+{% endtemplate %}
+
+{% template lava_fallback %}
+<svg class="lava__scene" viewBox="0 0 800 480" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg"><path class="lava__wax" fill-rule="evenodd" d="FALLBACK_WAX"/></svg>
+{% endtemplate %}
+
+<style>
+  .lava {
+    --liquid: #FFFFFF;
+    --wax: #444444;
+    --core: #111111;
+    --gloss: #999999;
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: var(--liquid);
+  }
+  .lava__scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .lava__wax { fill: var(--wax); }
+  .lava__core { fill: var(--core); }
+  .lava__gloss { fill: var(--gloss); }
+
+  /* Grayscale: dark wax in light liquid, at the exact levels each depth can show. */
+  .screen--2bit .lava { --wax: #555555; --core: #000000; --gloss: #AAAAAA; }
+  .screen--1bit .lava { --wax: #000000; --core: #000000; --gloss: #FFFFFF; }
+
+  /* Color: pure red wax; the liquid is the liquid_color setting. */
+  .screen--color-3bwr .lava,
+  .screen--color-4bwry .lava,
+  .screen--color-6a .lava,
+  .screen--color-7a .lava,
+  .screen--color-full .lava { --liquid: #FFFF00; --wax: #FF0000; --core: #FF0000; --gloss: #FFFFFF; }
+  .screen--color-3bwr .lava[data-liquid="white"],
+  .screen--color-4bwry .lava[data-liquid="white"],
+  .screen--color-6a .lava[data-liquid="white"],
+  .screen--color-7a .lava[data-liquid="white"],
+  .screen--color-full .lava[data-liquid="white"] { --liquid: #FFFFFF; }
+  .screen--color-3bwr .lava[data-liquid="black"],
+  .screen--color-4bwry .lava[data-liquid="black"],
+  .screen--color-6a .lava[data-liquid="black"],
+  .screen--color-7a .lava[data-liquid="black"],
+  .screen--color-full .lava[data-liquid="black"] { --liquid: #000000; }
+  /* Black, white and red only: no yellow to show. */
+  .screen--color-3bwr .lava[data-liquid="yellow"] { --liquid: #FFFFFF; }
+  /* Black, white and yellow only: no red, so the wax goes black. */
+  .screen--color-3bwy .lava { --liquid: #FFFF00; --wax: #000000; --core: #000000; --gloss: #FFFFFF; }
+  .screen--color-3bwy .lava[data-liquid="white"] { --liquid: #FFFFFF; }
+</style>
+
+<script>
+{% raw %}
+var LavaLamp = (function () {
+  // Movement per refresh, as a share of the screen height, for the fastest moving wax.
+  var SPEEDS = { very_slow: 0.025, slow: 0.045, normal: 0.08 };
+  // Screen area (CSS px) per blob, and a blob's typical radius. Fixed in px, so
+  // bigger screens get more blobs rather than bigger ones.
+  var AREA_PER_BLOB = 40000;
+  var RADIUS = 62;
+  var MIN_BLOBS = 4;
+  var SEED = 7;
+  // Field levels for the wax outline, the darker core and the gloss.
+  var WAX_LEVEL = 0.25;
+  var CORE_LEVEL = 0.62;
+  var GLOSS_LEVEL = 0.45;
+
+  function random(seed) {
+    return function () {
+      seed = (seed + 0x6D2B79F5) | 0;
+      var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function frac(x) { return x - Math.floor(x); }
+
+  // The fixed cast of blobs for a screen of this size. Lanes and phases follow a
+  // low-discrepancy sequence so the wax covers the screen without empty patches.
+  function cast(width, height) {
+    var count = Math.max(MIN_BLOBS, Math.round(width * height / AREA_PER_BLOB));
+    var rand = random(SEED);
+    var blobs = [];
+    for (var i = 0; i < count; i++) {
+      var size = rand();
+      var radius = RADIUS * (0.55 + 1.1 * size * size);
+      var span = height * (0.3 + 0.45 * rand()) + radius * 1.5 * rand();
+      blobs.push({
+        lane: frac(0.5 + i * 0.7548776662) * (width + radius) - radius / 2,
+        phase: frac(0.5 + i * 0.5698402910),
+        radius: radius,
+        aspect: 0.8 + 0.5 * rand(),
+        stretch: 0.4 + 0.8 * rand(),
+        centre: height * (0.5 + (rand() - 0.5) * 0.5),
+        span: span,
+        pace: 0.8 + 0.5 * rand(),
+        sway: rand(),
+        spin: rand()
+      });
+    }
+    return blobs;
+  }
+
+  // The balls that make up every blob at time t (in refreshes). Each blob is a
+  // head, a trailing tail that lengthens with speed, a drip that pinches off
+  // when it moves fast, and a slowly orbiting bulge.
+  function balls(blobs, t, height, perRefresh) {
+    var out = [];
+    blobs.forEach(function (b) {
+      var period = 2 * Math.PI * b.span / (perRefresh * height) * b.pace;
+      var angle = 2 * Math.PI * (b.phase + t / period);
+      var y = b.centre + b.span * Math.cos(angle);
+      var speed = Math.abs(Math.sin(angle));
+      var rising = Math.sin(angle) > 0;
+      var behind = rising ? 1 : -1;
+      var x = b.lane + b.radius * 0.35 * Math.sin(2 * Math.PI * (b.sway + t / (period * 1.7)));
+      var r = b.radius;
+      var stretch = 1 + b.stretch * speed;
+      var widen = 1 + 0.18 * (1 - speed);
+
+      out.push({ x: x, y: y, rx: r * b.aspect * widen / Math.sqrt(stretch), ry: r * stretch / b.aspect });
+
+      var bend = r * 0.45 * Math.sin(2 * Math.PI * (b.sway + t / (period * 0.9)));
+      var gap = r * (0.7 + 1.1 * speed);
+      out.push({ x: x + bend, y: y + behind * gap, rx: r * (0.62 + 0.12 * (1 - speed)), ry: r * (0.62 + 0.3 * speed) });
+
+      if (speed > 0.35) {
+        var drip = r * 0.42 * (speed - 0.35) / 0.65;
+        out.push({ x: x + bend * 1.6, y: y + behind * (gap * 1.9 + r * 0.2), rx: drip, ry: drip * 1.2 });
+      }
+
+      var orbit = 2 * Math.PI * (b.spin + t / (period * 0.6));
+      out.push({ x: x + r * 0.5 * Math.cos(orbit), y: y + r * 0.45 * Math.sin(orbit), rx: r * 0.5, ry: r * 0.45 });
+    });
+    return out;
+  }
+
+  // Sample the summed field on a grid that reaches one cell past each edge and
+  // is zero on its border, so every outline closes off-screen.
+  function sample(list, width, height, cell) {
+    var nx = Math.ceil(width / cell) + 5;
+    var ny = Math.ceil(height / cell) + 5;
+    var x0 = -2 * cell;
+    var y0 = -2 * cell;
+    var values = new Float32Array(nx * ny);
+    list.forEach(function (ball) {
+      // Compact kernel (1 - d²)², reaching 1/0.707 of the visible radius.
+      var ax = ball.rx / 0.7071;
+      var ay = ball.ry / 0.7071;
+      var i0 = Math.max(1, Math.floor((ball.x - ax - x0) / cell));
+      var i1 = Math.min(nx - 2, Math.ceil((ball.x + ax - x0) / cell));
+      var j0 = Math.max(1, Math.floor((ball.y - ay - y0) / cell));
+      var j1 = Math.min(ny - 2, Math.ceil((ball.y + ay - y0) / cell));
+      for (var j = j0; j <= j1; j++) {
+        var dy = (y0 + j * cell - ball.y) / ay;
+        for (var i = i0; i <= i1; i++) {
+          var dx = (x0 + i * cell - ball.x) / ax;
+          var d = dx * dx + dy * dy;
+          if (d < 1) values[j * nx + i] += (1 - d) * (1 - d);
+        }
+      }
+    });
+    return { values: values, nx: nx, ny: ny, x0: x0, y0: y0, cell: cell };
+  }
+
+  // Marching squares: closed outlines where the field crosses level.
+  function outlines(grid, level) {
+    var v = grid.values, nx = grid.nx, ny = grid.ny;
+    var points = {};
+    var links = {};
+
+    function point(id) {
+      if (points[id]) return points[id];
+      var k = id >> 1, i = k % nx, j = (k - i) / nx;
+      var a = v[k], b = (id & 1) ? v[k + nx] : v[k + 1];
+      var f = (level - a) / (b - a);
+      var px = grid.x0 + (i + ((id & 1) ? 0 : f)) * grid.cell;
+      var py = grid.y0 + (j + ((id & 1) ? f : 0)) * grid.cell;
+      return (points[id] = [px, py]);
+    }
+    function link(a, b) {
+      (links[a] = links[a] || []).push(b);
+      (links[b] = links[b] || []).push(a);
+    }
+
+    for (var j = 0; j < ny - 1; j++) {
+      for (var i = 0; i < nx - 1; i++) {
+        var k = j * nx + i;
+        var tl = v[k] >= level, tr = v[k + 1] >= level;
+        var bl = v[k + nx] >= level, br = v[k + nx + 1] >= level;
+        var code = (tl ? 8 : 0) | (tr ? 4 : 0) | (br ? 2 : 0) | (bl ? 1 : 0);
+        if (code === 0 || code === 15) continue;
+        var top = 2 * k, left = 2 * k + 1, bottom = 2 * (k + nx), right = 2 * (k + 1) + 1;
+        var centre = (v[k] + v[k + 1] + v[k + nx] + v[k + nx + 1]) / 4 >= level;
+        switch (code) {
+          case 1: case 14: link(left, bottom); break;
+          case 2: case 13: link(bottom, right); break;
+          case 3: case 12: link(left, right); break;
+          case 4: case 11: link(top, right); break;
+          case 6: case 9: link(top, bottom); break;
+          case 7: case 8: link(left, top); break;
+          case 5: if (centre) { link(left, top); link(bottom, right); } else { link(left, bottom); link(top, right); } break;
+          case 10: if (centre) { link(left, bottom); link(top, right); } else { link(left, top); link(bottom, right); } break;
+        }
+      }
+    }
+
+    var loops = [];
+    var seen = {};
+    Object.keys(links).forEach(function (start) {
+      start = +start;
+      if (seen[start]) return;
+      var loop = [];
+      var previous = -1, current = start;
+      while (!seen[current]) {
+        seen[current] = true;
+        loop.push(point(current));
+        var next = links[current][0] === previous ? links[current][1] : links[current][0];
+        previous = current;
+        current = next;
+        if (current === undefined) break;
+      }
+      if (loop.length > 3) loops.push(loop);
+    });
+    return loops;
+  }
+
+  // Closed Catmull-Rom curve through the outline points, as SVG path data.
+  function path(loops) {
+    return loops.map(function (p) {
+      var n = p.length;
+      var r = function (x) { return Math.round(x * 10) / 10; };
+      var d = 'M' + r(p[0][0]) + ' ' + r(p[0][1]);
+      for (var i = 0; i < n; i++) {
+        var a = p[(i - 1 + n) % n], b = p[i], c = p[(i + 1) % n], e = p[(i + 2) % n];
+        d += 'C' + r(b[0] + (c[0] - a[0]) / 6) + ' ' + r(b[1] + (c[1] - a[1]) / 6) +
+             ' ' + r(c[0] - (e[0] - b[0]) / 6) + ' ' + r(c[1] - (e[1] - b[1]) / 6) +
+             ' ' + r(c[0]) + ' ' + r(c[1]);
+      }
+      return d + 'Z';
+    }).join('');
+  }
+
+  // Path data for every layer of the scene at time ms.
+  function frame(width, height, ms, options) {
+    var perRefresh = SPEEDS[options.speed] || SPEEDS.slow;
+    var t = ms / 60000 / (options.refresh || 15);
+    var cell = Math.max(4, Math.min(width, height) / 100);
+    var grid = sample(balls(cast(width, height), t, height, perRefresh), width, height, cell);
+    return {
+      wax: path(outlines(grid, WAX_LEVEL)),
+      core: path(outlines(grid, CORE_LEVEL)),
+      gloss: path(outlines(grid, GLOSS_LEVEL)),
+      shift: RADIUS * 0.1
+    };
+  }
+
+  var drawn = 0;
+
+  function draw(el, ms) {
+    var width = el.clientWidth, height = el.clientHeight;
+    if (!width || !height) return;
+    var layers = frame(width, height, ms, {
+      speed: el.getAttribute('data-speed'),
+      refresh: parseFloat(el.getAttribute('data-refresh')) || 15
+    });
+    var id = 'lava-' + (++drawn);
+    var s = layers.shift;
+    // The gloss is a thin crescent: the gloss outline nudged up and left, minus
+    // itself, kept inside the wax.
+    el.innerHTML =
+      '<svg class="lava__scene" viewBox="0 0 ' + width + ' ' + height + '" xmlns="http://www.w3.org/2000/svg">' +
+      '<defs><clipPath id="' + id + '-wax"><path fill-rule="evenodd" d="' + layers.wax + '"/></clipPath>' +
+      '<mask id="' + id + '-gloss" maskUnits="userSpaceOnUse" x="0" y="0" width="' + width + '" height="' + height + '">' +
+      '<rect width="' + width + '" height="' + height + '" fill="#fff"/>' +
+      '<path fill="#000" fill-rule="evenodd" d="' + layers.gloss + '"/></mask></defs>' +
+      '<path class="lava__wax" fill-rule="evenodd" d="' + layers.wax + '"/>' +
+      '<path class="lava__core" fill-rule="evenodd" d="' + layers.core + '"/>' +
+      '<g clip-path="url(#' + id + '-wax)" mask="url(#' + id + '-gloss)">' +
+      '<path class="lava__gloss" fill-rule="evenodd" transform="translate(' + (-s) + ' ' + (-s) + ')" d="' + layers.gloss + '"/></g>' +
+      '</svg>';
+  }
+
+  return { frame: frame, draw: draw };
+})();
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', function () {
+    var now = Date.now();
+    document.querySelectorAll('.lava').forEach(function (el) {
+      try { LavaLamp.draw(el, now); } catch (e) { /* the fallback scene stays */ }
+    });
+  });
+}
+if (typeof module !== 'undefined') module.exports = LavaLamp;
+{% endraw %}
+</script>
