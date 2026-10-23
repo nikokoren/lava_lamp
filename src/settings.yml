@@ -21,3 +21,21 @@ custom_fields:
   field_type: author_bio
   description: A full-screen lava lamp whose red wax slowly rises, sinks and merges across refreshes.
   github_url: https://github.com/nikokoren/lava_lamp
+- keyname: liquid_color
+  name: Liquid Color
+  field_type: select
+  description: Color of the liquid around the wax on color displays. Grayscale displays always use a light liquid.
+  options:
+  - Yellow: yellow
+  - White: white
+  - Black: black
+  default: yellow
+- keyname: speed
+  name: Speed
+  field_type: select
+  description: How far the wax moves between refreshes.
+  options:
+  - Very slow: very_slow
+  - Slow: slow
+  - Normal: normal
+  default: slow

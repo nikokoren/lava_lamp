@@ -2,7 +2,7 @@
 
 A TRMNL recipe that fills the whole display with a slowly evolving, abstract lava lamp: red wax blobs drifting through a contrasting liquid, advancing a little with each refresh.
 
-The full brief is in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
+The full brief is in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md); decisions made since are in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Layout
 

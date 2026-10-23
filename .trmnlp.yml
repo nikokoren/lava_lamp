@@ -7,7 +7,9 @@ watch:
   - src
 
 # values of custom fields (defined in src/settings.yml)
-custom_fields: {}
+custom_fields:
+  liquid_color: yellow
+  speed: slow
 
 # override variables
 variables:
