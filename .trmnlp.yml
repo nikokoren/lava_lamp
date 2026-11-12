@@ -14,3 +14,8 @@ custom_fields:
 # override variables
 variables:
   trmnl: {}
+
+# The scene has no text, so the rule that asks for framework text elements
+# (title, value, label, description) does not apply.
+ignored_lint_rules:
+  - framework_elements_used
